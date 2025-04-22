@@ -127,6 +127,59 @@ class ArrayField(Field):
         """Check if array contains any of the specified values"""
         return Filter(self.name, "contains_any", values)
 
+class SparseVectorField(Field):
+    """Sparse vector field for high‑dimensional embeddings"""
+
+    def __init__(self,
+                 on_disk: bool = True,
+                 idf: bool = True,
+                 **kwargs):
+        """
+        Args:
+            on_disk: Store the inverted index on disk (saves RAM).
+            idf:     Apply IDF weighting at query time.
+            **kwargs forwarded to Field (nullable, default, primary_key).
+        """
+        super().__init__(field_type="sparse_vector", **kwargs)
+        self.on_disk = on_disk
+        self.idf = idf
+        self.dimensions = None
+        self.distance = None
+
+    def __set__(self, instance, value):
+        """
+        Accepts either:
+          - a dict: {"indices": [...], "values": [...]}
+          - or None
+        """
+        if value is not None:
+            if not isinstance(value, dict):
+                raise TypeError(f"Sparse field '{self.name}' must be a dict")
+            idx = value.get("indices")
+            vals = value.get("values")
+            if not isinstance(idx, list) or not isinstance(vals, list):
+                raise TypeError(f"'{self.name}' indices/values must be lists")
+            if len(idx) != len(vals):
+                raise ValueError(f"'{self.name}' indices/values length mismatch")
+        super().__set__(instance, value)
+
+    def __eq__(self, other):
+        return (
+            isinstance(other, SparseVectorField)
+            and self.name == other.name
+            and self.on_disk == other.on_disk
+            and self.idf == other.idf
+        )
+
+    def __hash__(self):
+        return hash((self.__class__, self.name, self.on_disk, self.idf))
+
+    def __str__(self):
+        return f"{self.name}:sparse(on_disk={self.on_disk},idf={self.idf})"
+
+    def __call__(self, *args, **kwargs):
+        # so that field() returns its name, like VectorField
+        return self.name
 
 class VectorField(Field):
     """Special field for vector data"""
@@ -161,9 +214,6 @@ class VectorField(Field):
     
     def __call__(self, *args, **kwargs):
         # Return the field name as a plain string
-        print("--------------------------------")
-        print(self.name)
-        print("--------------------------------")
         return self.name
 
 class ModelMeta(type):

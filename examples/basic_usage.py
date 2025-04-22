@@ -3,9 +3,9 @@ Example usage of the Qdrant ORM framework with updated basic usage including arr
 """
 import numpy as np
 from qdrant_orm import (
-    Base, Field, VectorField, ArrayField,
+    Base, Field, VectorField, ArrayField,SparseVectorField,
     QdrantEngine, QdrantSession,
-    String, Integer, Float, Boolean, Vector, Array
+    String, Integer, Float, Boolean, Vector, Array,
 )
 from qdrant_orm.crud import CRUDOperations
 
@@ -45,6 +45,7 @@ class Product(Base):
     # Multiple vector fields for different embedding types
     text_embedding = VectorField(dimensions=384)
     image_embedding = VectorField(dimensions=512)
+    sparse_embedding = SparseVectorField()
 
 
 def main():

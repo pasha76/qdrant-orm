@@ -59,12 +59,16 @@ class QdrantEngine:
         
         # Create vector configs for named vectors (if multiple)
         vectors_config = {}
+        sparse_vectors_config={}
         if len(vector_fields) > 1:
             for name, (dimensions, distance) in vector_fields.items():
-                vectors_config[name] = qmodels.VectorParams(
-                    size=dimensions,
-                    distance=distance
-                )
+                if dimensions and distance:
+                    vectors_config[name] = qmodels.VectorParams(
+                        size=dimensions,
+                        distance=distance
+                    )
+                else:
+                    sparse_vectors_config[name] = qmodels.SparseVectorParams()
         
         # Prepare schema for payload fields
         payload_schema = {}
@@ -81,7 +85,8 @@ class QdrantEngine:
                     size=primary_dimensions,
                     distance=primary_distance
                 )
-            )
+            ),
+            sparse_vectors_config=sparse_vectors_config
         )
     
     def drop_collection(self, collection_name: str):

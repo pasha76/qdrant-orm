@@ -243,7 +243,7 @@ class Query:
             if params["score_threshold"] is not None:
                 sp["score_threshold"] = params["score_threshold"]
             if self._build_qdrant_filter():
-                sp["filter"] = self._build_qdrant_filter()
+                sp["query_filter"] = self._build_qdrant_filter()
             try:
                 res = client.search(**sp)
                 for pt in res:
