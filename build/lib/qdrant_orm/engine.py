@@ -7,8 +7,8 @@ import re
 
 from qdrant_client import QdrantClient
 from qdrant_client.http import models as qmodels
-
-from .base import Base
+from qdrant_client.http.models import SparseVector
+from .base import Base,VectorField,SparseVectorField
 
 
 class QdrantEngine:
@@ -38,57 +38,42 @@ class QdrantEngine:
     
     def create_collection(self, collection_name: str, model_class: Type[Base]):
         """
-        Create a collection for the given model class
-        
-        Args:
-            collection_name: Name of the collection
-            model_class: Model class to create collection for
+        Create (or recreate) a Qdrant collection wiring up ALL vector fields
+        by their attribute names—dense and sparse—so that your upserts
+        with named vectors will always succeed.
         """
-        # Extract vector fields
-        vector_fields = {}
-        for name, field in model_class._fields.items():
-            if hasattr(field, 'dimensions'):
-                vector_fields[name] = (field.dimensions, field.distance)
-        
-        if not vector_fields:
-            raise ValueError(f"Model {model_class.__name__} has no vector fields")
-        
-        # Use the first vector field as the primary vector
-        primary_vector_name = next(iter(vector_fields))
-        primary_dimensions, primary_distance = vector_fields[primary_vector_name]
-        
-        # Create vector configs for named vectors (if multiple)
-        vectors_config = {}
-        sparse_vectors_config={}
-        if len(vector_fields) > 1:
-            for name, (dimensions, distance) in vector_fields.items():
-                if dimensions and distance:
-                    vectors_config[name] = qmodels.VectorParams(
-                        size=dimensions,
-                        distance=distance
-                    )
-                else:
-                    sparse_vectors_config[name] = qmodels.SparseVectorParams()
-        
-        # Prepare schema for payload fields
-        payload_schema = {}
-        for name, field in model_class._fields.items():
-            if not hasattr(field, 'dimensions'):  # Skip vector fields
-                payload_schema[name] = field.field_type
-        
-        # Create collection
+        # 1) Gather your fields
+        dense_fields = {
+            name: fld
+            for name, fld in model_class._fields.items()
+            if isinstance(fld, VectorField)
+        }
+        sparse_fields = {
+            name: fld
+            for name, fld in model_class._fields.items()
+            if isinstance(fld, SparseVectorField)
+        }
+
+        # 2) Build a **named** vectors_config for every dense field
+        #    (never use the single-vector shorthand)
+        vectors_config = {
+            name: qmodels.VectorParams(size=fld.dimensions, distance=fld.distance)
+            for name, fld in dense_fields.items()
+        }
+
+        # 3) Build named sparse_vectors_config for every sparse field
+        sparse_vectors_config = {
+            name: qmodels.SparseVectorParams()
+            for name in sparse_fields
+        }
+
+        # 4) Recreate the collection with both named configs
         self.client.recreate_collection(
             collection_name=collection_name,
-            vectors_config=(
-                vectors_config or 
-                qmodels.VectorParams(
-                    size=primary_dimensions,
-                    distance=primary_distance
-                )
-            ),
+            vectors_config=vectors_config,
             sparse_vectors_config=sparse_vectors_config
         )
-    
+        
     def drop_collection(self, collection_name: str):
         """
         Drop a collection
@@ -172,89 +157,63 @@ class QdrantSession:
         """Commit all pending changes"""
         # Group operations by collection
         operations_by_collection = {}
-        
         for op, instance in self._pending:
             collection = instance.__class__.__collection__
-            if collection not in operations_by_collection:
-                operations_by_collection[collection] = {'add': [], 'delete': []}
-            
-            operations_by_collection[collection][op].append(instance)
-        
-        # Process each collection
+            operations_by_collection.setdefault(collection, {'add': [], 'delete': []})[op].append(instance)
+
         for collection, operations in operations_by_collection.items():
             # Process additions
             if operations['add']:
                 points = []
                 for instance in operations['add']:
-                    # Extract vector fields and payload
                     vectors = {}
                     payload = {}
-                    
+
+                    # Split out both dense and sparse vector fields
                     for name, value in instance._values.items():
                         field = instance.__class__._fields.get(name)
-                        if hasattr(field, 'dimensions'):
+                        if isinstance(field, (VectorField, SparseVectorField)):
                             vectors[name] = value
                         else:
                             payload[name] = value
-                    
-                    # Generate ID if not provided
+
+                    # Ensure primary key
                     original_id = getattr(instance, instance.__class__._pk_field, None)
                     if original_id is None:
                         original_id = str(uuid.uuid4())
                         setattr(instance, instance.__class__._pk_field, original_id)
-                    
-                    # Convert ID to Qdrant-compatible format
                     qdrant_id = _convert_id_for_qdrant(original_id)
-                    
-                    # Store the mapping between original ID and Qdrant ID
                     self._id_mapping[(collection, original_id)] = qdrant_id
-                    
-                    # Store original ID in payload for retrieval
-                    pk_field = instance.__class__._pk_field
-                    payload[pk_field] = original_id
-                    
-                    # If only one vector field, use it as the primary vector
-                    if len(vectors) == 1:
-                        vector = next(iter(vectors.values()))
-                        points.append(qmodels.PointStruct(
-                            id=qdrant_id,
-                            vector=vector,
-                            payload=payload
-                        ))
+                    payload[instance.__class__._pk_field] = original_id
+
+                    # Build PointStruct with named vectors (dense or sparse)
+                    if len(vectors) == 1 and isinstance(next(iter(instance.__class__._fields.values())), VectorField):
+                        # single dense vector can be flattened
+                        vector_value = next(iter(vectors.values()))
                     else:
-                        # Multiple vector fields
-                        points.append(qmodels.PointStruct(
-                            id=qdrant_id,
-                            vector=vectors,
-                            payload=payload
-                        ))
-                
-                # Upsert points
-                self.client.upsert(
-                    collection_name=collection,
-                    points=points
-                )
-            
+                        # multiple or sparse vectors remain named
+                        vector_value = vectors
+
+                    points.append(qmodels.PointStruct(
+                        id=qdrant_id,
+                        vector=vector_value,
+                        payload=payload
+                    ))
+
+                self.client.upsert(collection_name=collection, points=points)
+
             # Process deletions
             if operations['delete']:
-                point_ids = []
+                ids = []
                 for instance in operations['delete']:
-                    original_id = instance.pk
-                    # Look up the Qdrant ID from mapping or convert it
-                    qdrant_id = self._id_mapping.get(
-                        (collection, original_id), 
-                        _convert_id_for_qdrant(original_id)
-                    )
-                    point_ids.append(qdrant_id)
-                
+                    orig = instance.pk
+                    q_id = self._id_mapping.get((collection, orig), _convert_id_for_qdrant(orig))
+                    ids.append(q_id)
                 self.client.delete(
                     collection_name=collection,
-                    points_selector=qmodels.PointIdsList(
-                        points=point_ids
-                    )
+                    points_selector=qmodels.PointIdsList(points=ids)
                 )
-        
-        # Clear pending operations
+
         self._pending.clear()
     
     def query(self, model_class: Type[Base]):
@@ -298,7 +257,10 @@ class QdrantSession:
             if isinstance(point.vector, dict):
                 # Multiple named vectors
                 for name, vector in point.vector.items():
-                    data[name] = vector
+                    if isinstance(vector, SparseVector):
+                        data[name] = vector.model_dump()
+                    else:
+                        data[name] = vector
             else:
                 # Single vector - find the vector field name
                 vector_field_name = None

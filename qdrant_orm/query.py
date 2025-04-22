@@ -1,6 +1,6 @@
 from typing import Any, Dict, List, Optional, Tuple, Type, Union
 
-from qdrant_client.http.models import Filter as QdrantFilter, NamedVector
+from qdrant_client.http.models import Filter as QdrantFilter, NamedVector, NamedSparseVector, SparseVector
 
 from .base import Base, Field, VectorField
 from .filters import Filter, FilterGroup
@@ -103,10 +103,22 @@ class Query:
 
         # 2) Single-field vector search
         if self._vector_field and self._vector_value:
-            search_request = NamedVector(
-                name=self._vector_field,
-                vector=self._vector_value
-            )
+            if not isinstance(self._vector_value,dict):
+                search_request = NamedVector(
+                    name=self._vector_field,
+                    vector=self._vector_value
+                )
+            else:
+                print(self._vector_value)
+                vec_dict = self._vector_value
+                sparse_vec = SparseVector(
+                    indices=vec_dict['indices'],
+                    values=vec_dict['values']
+                )
+                search_request = NamedSparseVector(
+                    name=self._vector_field.name,
+                    vector=sparse_vec
+                )
             search_params: Dict[str, Any] = {
                 "collection_name": collection_name,
                 "limit": self._limit,
