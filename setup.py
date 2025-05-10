@@ -5,7 +5,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="qdrant-orm",
-    version="0.1.0",
+    version="0.2.0",
     description="A lightweight SQLAlchemy-style ORM for Qdrant vector database",
     author="Tolga Gunduz",
     packages=find_packages(),

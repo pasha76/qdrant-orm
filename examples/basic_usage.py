@@ -2,6 +2,9 @@
 Example usage of the Qdrant ORM framework with updated basic usage including array fields
 """
 import numpy as np
+import sys
+sys.path.append("/Users/tolgagunduz/Documents/projects/blushyv3/orm/")
+
 from qdrant_orm import (
     Base, Field, VectorField, ArrayField,SparseVectorField,
     QdrantEngine, QdrantSession,
@@ -147,7 +150,7 @@ def main():
     similar_docs = session.query(Document).vector_search(
         field=None,
         query_vector=query_vector
-    ).limit(3).all()
+    ).filter(Document.rating.not_in([4.0,5.0])).limit(3).all()
 
     for doc in similar_docs:
         print(f"  - {doc.title} (score hidden in this example)")

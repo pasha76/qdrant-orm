@@ -2,6 +2,8 @@
 Example usage of weighted multi-vector search in Qdrant ORM
 """
 import numpy as np
+import sys
+sys.path.append("/Users/tolgagunduz/Documents/projects/blushyv3/orm/")
 from qdrant_orm import (
     Base, Field, VectorField, SparseVectorField,
     QdrantEngine, QdrantSession,
@@ -185,13 +187,14 @@ def main():
         Product.price < 500.0
     ).combined_vector_search(
         vector_fields_with_weights={
-            Product.image_embedding: 0.6,
-            Product.text_embedding: 0.4
+            Product.image_embedding: 0.8,
+            Product.text_embedding: 0.,
+            Product.sparse_tags: 1.
         },
         query_vectors={
             "image_embedding": query_image_vector,
             "text_embedding": query_text_vector,
-            "sparse_tags": {"indices": [0, 1, 2], "values": [0., 0., 0.]}
+            "sparse_tags": {"indices": [0, 1, 2], "values": [1., 1., 0.]}
         },
     ).limit(5).all()
     

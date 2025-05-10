@@ -2,6 +2,8 @@
 Example usage of the Qdrant ORM framework with array fields
 """
 import numpy as np
+import sys
+sys.path.append("/Users/tolgagunduz/Documents/projects/blushyv3/orm/")
 from qdrant_orm import (
     Base, Field, VectorField, ArrayField,
     QdrantEngine, QdrantSession,

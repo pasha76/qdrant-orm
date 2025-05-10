@@ -1,9 +1,17 @@
 from typing import Any, Dict, List, Optional, Tuple, Type, Union
+from qdrant_orm import filters
 
 from qdrant_client.http.models import Filter as QdrantFilter, NamedVector, NamedSparseVector, SparseVector
 
 from .base import Base, Field, VectorField
 from .filters import Filter, FilterGroup
+from qdrant_client.http.models import (
+    Filter       as QdrantFilter,
+    FieldCondition,
+    Range,
+    MatchValue,    # for exact match
+    MatchAny,      # for "any" list‐match
+)
 
 
 class Query:
@@ -30,7 +38,8 @@ class Query:
     def filter(self, *args: Filter) -> "Query":
         """Add filters to the query."""
         for arg in args:
-            if not isinstance(arg, Filter):
+            # Check if it's either our Filter type or the qdrant_orm Filter type
+            if not (isinstance(arg, Filter) or isinstance(arg, qdrant_orm.filters.Filter)):
                 raise TypeError(f"Expected Filter object, got {type(arg)}")
             self._filters.append(arg)
         return self
@@ -173,43 +182,113 @@ class Query:
         except Exception as e:
             print(f"Error counting records: {e}")
             return 0
-
     def _build_qdrant_filter(self) -> Optional[QdrantFilter]:
         if not self._filters:
             return None
-        must_conditions: List[Dict[str, Any]] = []
-        for filt in self._filters:
-            qf = self._convert_filter_to_qdrant(filt)
-            if qf:
-                must_conditions.append(qf)
-        return QdrantFilter(must=must_conditions) if must_conditions else None
 
-    def _convert_filter_to_qdrant(self, filter_obj: Filter) -> Dict[str, Any]:
-        if isinstance(filter_obj, FilterGroup):
-            if filter_obj.logic == "and":
-                return {"must": [self._convert_filter_to_qdrant(f) for f in filter_obj.filters]}
-            if filter_obj.logic == "or":
-                return {"should": [self._convert_filter_to_qdrant(f) for f in filter_obj.filters]}
-            raise ValueError(f"Unsupported filter logic: {filter_obj.logic}")
-        field_name, op, value = filter_obj.field_name, filter_obj.operator, filter_obj.value
+        must, must_not, should = [], [], []
+
+        for filt in self._filters:
+            # handle groups
+            if isinstance(filt, FilterGroup):
+                for child in filt.filters:
+                    cond = self._make_qdrant_condition(child)
+                    if isinstance(cond, list):  # Handle contains_all conditions
+                        must.extend(cond)
+                    else:
+                        (must if filt.logic=="and" else should).append(cond)
+                continue
+
+            cond = self._make_qdrant_condition(filt)
+            if isinstance(cond, list):  # Handle contains_all conditions
+                must.extend(cond)
+            elif filt.operator in ("!=", "not_in"):
+                must_not.append(cond)
+            else:
+                must.append(cond)
+
+        # Always pass lists, never None
+        return QdrantFilter(
+            must=must,
+            must_not=must_not,
+            should=should
+        )
+
+    def _make_qdrant_condition(self, filt: Filter):
+        key, op, val = filt.field_name, filt.operator, filt.value
+
         if op == "==":
-            return {"key": field_name, "match": {"value": value}}
+            return FieldCondition(key=key, match=MatchValue(value=val))
+
         if op == "!=":
-            return {"must_not": {"key": field_name, "match": {"value": value}}}
-        if op in (">", ">=", "<", "<="):
-            range_cond = {}
-            if op == ">":   range_cond["gt"] = value
-            if op == ">=":  range_cond["gte"] = value
-            if op == "<":   range_cond["lt"] = value
-            if op == "<=":  range_cond["lte"] = value
-            return {"key": field_name, "range": range_cond}
+            # inequality is a "must_not" FieldCondition under the hood
+            return FieldCondition(key=key, match=MatchValue(value=val))
+
         if op == "in":
-            return {"key": field_name, "match": {"any": value}}
+            # Convert values to strings for MatchAny
+            if isinstance(val, (list, tuple)):
+                val = [str(v) for v in val]
+            return FieldCondition(key=key, match=MatchAny(any=val))
+
         if op == "not_in":
-            return {"must_not": {"key": field_name, "match": {"any": value}}}
-        if op in ("contains", "contains_all", "contains_any"):
-            mode = "value" if op == "contains" else ("all" if op == "contains_all" else "any")
-            return {"key": field_name, "match": {mode: value}}
+            # Convert values to strings for MatchAny
+            if isinstance(val, (list, tuple)):
+                val = [str(v) for v in val]
+            return FieldCondition(key=key, match=MatchAny(any=val))
+
+        if op == "contains":
+            return FieldCondition(key=key, match=MatchValue(value=val))
+
+        if op == "contains_any":
+            # Convert values to strings for MatchAny
+            if isinstance(val, (list, tuple)):
+                val = [str(v) for v in val]
+            return FieldCondition(key=key, match=MatchAny(any=val))
+
+        if op == "contains_all":
+            # For contains_all, we need to create multiple conditions with AND logic
+            conditions = []
+            if isinstance(val, (list, tuple)):
+                for item in val:
+                    conditions.append(FieldCondition(key=key, match=MatchValue(value=str(item))))
+            return conditions
+
+        if op in (">", ">=", "<", "<="):
+            kwargs = {}
+            if op == ">":   kwargs["gt"]  = val
+            if op == ">=":  kwargs["gte"] = val
+            if op == "<":   kwargs["lt"]  = val
+            if op == "<=":  kwargs["lte"] = val
+            return FieldCondition(key=key, range=Range(**kwargs))
+
+        raise ValueError(f"Unsupported operator: {op}")
+
+    def _convert_filter_to_qdrant(self, filt: Filter) -> Dict[str,Any]:
+        # no more FilterGroup handling here!
+        field, op, value = filt.field_name, filt.operator, filt.value
+
+        if op == "==":
+            return {"key": field, "match": {"value": value}}
+        if op in (">", ">=", "<", "<="):
+            rng = {}
+            if op == ">":   rng["gt"]  = value
+            if op == ">=":  rng["gte"] = value
+            if op == "<":   rng["lt"]  = value
+            if op == "<=":  rng["lte"] = value
+            return {"key": field, "range": rng}
+        if op == "in":
+            return {"key": field, "match": {"any": value}}
+        if op == "not_in":
+            return {"key": field, "match": {"any": value}}
+        if op == "contains":
+            return {"key": field, "match": {"value": value}}
+        if op == "contains_any":
+            return {"key": field, "match": {"any": value}}
+        if op == "contains_all":
+            return {"key": field, "match": {"all": value}}
+        if op == "!=":
+            return {"key": field, "match": {"value": value}}
+
         raise ValueError(f"Unsupported operator: {op}")
 
     def combined_vector_search(
