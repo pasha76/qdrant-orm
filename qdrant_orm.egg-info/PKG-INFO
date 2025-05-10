@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: qdrant-orm
-Version: 0.2.0
+Version: 0.2.3
 Summary: A lightweight SQLAlchemy-style ORM for Qdrant vector database
 Author: Tolga Gunduz
 Classifier: Development Status :: 3 - Alpha

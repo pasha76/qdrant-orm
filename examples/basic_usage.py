@@ -150,10 +150,10 @@ def main():
     similar_docs = session.query(Document).vector_search(
         field=None,
         query_vector=query_vector
-    ).filter(Document.rating.not_in([4.0,5.0])).limit(3).all()
+    ).filter(Document.rating.not_in([4.0,5.0])).offset(1).limit(3).all()
 
     for doc in similar_docs:
-        print(f"  - {doc.title} (score hidden in this example)")
+        print(f"  - {doc.title} rating: {doc.rating} (score hidden in this example)")
     # Update a document including array fields
     print("\n9. Updating a document")
     doc1 = session.get(Document, "doc1")
