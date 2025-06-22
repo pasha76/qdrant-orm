@@ -272,6 +272,10 @@ class QdrantSession:
                 if vector_field_name:
                     data[vector_field_name] = point.vector
         
+        # Include score if available (from search results)
+        if hasattr(point, 'score') and point.score is not None:
+            data['score'] = point.score
+        
         # Use the original ID from payload if available, otherwise use Qdrant ID
         pk_field = model_class._pk_field
         if pk_field and pk_field in data:

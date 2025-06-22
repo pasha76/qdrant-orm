@@ -140,7 +140,6 @@ class Query:
             if self._score_threshold is not None:
                 search_params["score_threshold"] = self._score_threshold
             if self._build_qdrant_filter():
-                #search_params["filter"] = self._build_qdrant_filter()
                 search_params["query_filter"] = self._build_qdrant_filter() 
 
             try:
