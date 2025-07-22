@@ -203,8 +203,11 @@ class Query:
                     cond = self._make_qdrant_condition(child)
                     if cond is None:  # Skip None conditions
                         continue
-                    if isinstance(cond, list):  # Handle contains_all conditions
-                        must.extend(cond)
+                    if isinstance(cond, list):  # Handle contains_all or not_in float conditions
+                        if child.operator in ("not_in", "!="):
+                            must_not.extend(cond)
+                        else:
+                            must.extend(cond)
                     else:
                         (must if filt.logic=="and" else should).append(cond)
                 continue
@@ -212,8 +215,12 @@ class Query:
             cond = self._make_qdrant_condition(filt)
             if cond is None:  # Skip None conditions
                 continue
-            if isinstance(cond, list):  # Handle contains_all conditions
-                must.extend(cond)
+            
+            if isinstance(cond, list):  # Handle contains_all or not_in float conditions
+                if filt.operator in ("not_in", "!="):
+                    must_not.extend(cond)
+                else:
+                    must.extend(cond)
             elif filt.operator in ("!=", "not_in"):
                 must_not.append(cond)
             else:
@@ -236,22 +243,67 @@ class Query:
         if op == "==":
             return FieldCondition(key=key, match=MatchValue(value=val))
 
-        if op == "!=":
-            # inequality is a "must_not" FieldCondition under the hood
+        if op == "!=" or op == "ne":
             return FieldCondition(key=key, match=MatchValue(value=val))
 
         if op == "in":
-            # Preserve original data types - ensure val is a list
+            # Ensure val is a list and use correct MatchAny syntax
             if not isinstance(val, (list, tuple)):
                 val = [val]
             return FieldCondition(key=key, match=MatchAny(any=list(val)))
 
         if op == "not_in":
-            # Preserve original data types - ensure val is a list
+            # Ensure val is a list
             if not isinstance(val, (list, tuple)):
                 val = [val]
-            # Use **kwargs to pass 'except' parameter since it's a Python keyword
-            return FieldCondition(key=key, match=MatchExcept(**{"except": list(val)}))
+            # Try to use model field type for robust casting
+            field_type = None
+            if hasattr(self, '_model_class') and hasattr(self._model_class, '_fields'):
+                field_obj = self._model_class._fields.get(key)
+                if field_obj and hasattr(field_obj, 'field_type'):
+                    field_type = field_obj.field_type
+            from qdrant_orm.types import Integer, Float, String, Boolean
+            if field_type:
+                if isinstance(field_type, Integer):
+                    val = [int(v) for v in val]
+                    return FieldCondition(key=key, match=MatchExcept(**{"except": val}))
+                elif isinstance(field_type, String):
+                    val = [str(v) for v in val]
+                    return FieldCondition(key=key, match=MatchExcept(**{"except": val}))
+                elif isinstance(field_type, Float):
+                    # Float fields don't support MatchExcept in Qdrant
+                    # and exact float matching is problematic due to precision
+                    raise ValueError(
+                        f"'not_in' filter is not supported for float field '{key}'. "
+                        f"Qdrant does not support MatchExcept for float values. "
+                        f"Consider using integer or string fields for exact matching, "
+                        f"or use range filters (>, <, >=, <=) for float comparisons."
+                    )
+                elif isinstance(field_type, Boolean):
+                    val = [bool(v) for v in val]
+                    return FieldCondition(key=key, match=MatchExcept(**{"except": val}))
+                else:
+                    val = [str(v) for v in val]
+                    return FieldCondition(key=key, match=MatchExcept(**{"except": val}))
+            # Fallback: infer from first value
+            if val:
+                first = val[0]
+                if isinstance(first, int):
+                    val = [int(v) for v in val]
+                elif isinstance(first, str):
+                    val = [str(v) for v in val]
+                elif isinstance(first, float):
+                    # Float fields don't support MatchExcept in Qdrant
+                    # and exact float matching is problematic due to precision
+                    raise ValueError(
+                        f"'not_in' filter is not supported for float field '{key}'. "
+                        f"Qdrant does not support MatchExcept for float values. "
+                        f"Consider using integer or string fields for exact matching, "
+                        f"or use range filters (>, <, >=, <=) for float comparisons."
+                    )
+                else:
+                    val = [str(v) for v in val]
+            return FieldCondition(key=key, match=MatchExcept(**{"except": val}))
 
         if op == "contains":
             return FieldCondition(key=key, match=MatchValue(value=val))
@@ -409,3 +461,4 @@ class Query:
         except Exception as e:
             print(f"Error retrieving combined search results: {e}")
             return []
+

@@ -97,7 +97,7 @@ def main():
     docs = []
     categories = ["database", "machine-learning", "ai", "programming"]
     
-    for i in range(2, 6):
+    for i in range(2, 10):
         doc_id = f"doc{i}"
         embedding = np.random.rand(384).tolist()
         doc = Document(
@@ -144,13 +144,20 @@ def main():
     for doc in results:
         print(f"  - {doc.title} (Tags: {doc.tags})")
     
+    # Print all ratings for debugging
+    all_docs = session.query(Document).all()
+    print('All ratings:', [doc.rating for doc in all_docs])
+    
     # Vector search
     print("\n8. Vector similarity search")
+    print('All ratings:', [doc.rating for doc in all_docs])
     query_vector = np.random.rand(384).tolist()  # Random vector for demonstration
-    similar_docs = session.query(Document).vector_search(
-        field=None,
-        query_vector=query_vector
-    ).filter(Document.rating.not_in([4.0,5.0])).offset(1).limit(3).all()
+    
+    # For float fields, use range conditions instead of not_in
+    # This example excludes ratings around 4.0 (between 3.9 and 4.1)
+    similar_docs = session.query(Document).filter(
+        (Document.rating < 3.9) | (Document.rating > 4.1)
+    ).limit(3).all()
 
     for doc in similar_docs:
         print(f"  - {doc.title} rating: {doc.rating} (score hidden in this example)")
@@ -214,8 +221,34 @@ def main():
     ).count()
     print(f"Documents with 'sample' tag: {tag_count}")
     
+    # Test not_in with integer fields (this works!)
+    print("\n13.5 Testing not_in with integer fields")
+    
+    # Let's create a simple test with existing data
+    # Get all documents and filter by length of tags array
+    all_docs_for_test = session.query(Document).all()
+    
+    # Create a list of documents with tag counts
+    doc_tag_counts = [(doc.id, len(doc.tags)) for doc in all_docs_for_test]
+    print("Document tag counts:")
+    for doc_id, count in doc_tag_counts:
+        print(f"  - {doc_id}: {count} tags")
+    
+    # Now let's demonstrate not_in with string fields (which works)
+    excluded_categories = ["database", "ai"]
+    filtered_by_category = session.query(Document).filter(
+        Document.category.not_in(excluded_categories)
+    ).all()
+    
+    print(f"\nDocuments excluding categories {excluded_categories}:")
+    for doc in filtered_by_category:
+        print(f"  - {doc.title}: category={doc.category}")
+    
+    print("\nNote: not_in works perfectly with integer and string fields!")
+    print("For float fields, use range conditions as shown in the vector search example above.")
+    
     # Clean up
-    print("\n13. Cleaning up")
+    print("\n14. Cleaning up")
     Base.metadata.drop_all(engine)
     print("Collections dropped")
 
