@@ -1,7 +1,7 @@
 from typing import Any, Dict, List, Optional, Tuple, Type, Union
 from qdrant_orm import filters
 
-from qdrant_client.http.models import Filter as QdrantFilter, NamedVector, NamedSparseVector, SparseVector
+from qdrant_client.http.models import Filter as QdrantFilter, MatchExcept, NamedVector, NamedSparseVector, SparseVector
 
 from .base import Base, Field, VectorField
 from .filters import Filter, FilterGroup
@@ -11,6 +11,14 @@ from qdrant_client.http.models import (
     Range,
     MatchValue,    # for exact match
     MatchAny,      # for "any" list‐match
+    MatchExcept,   # for "not in" list‐match
+    MatchText,     # for full-text search
+    IsEmptyCondition,  # for checking empty fields
+    IsNullCondition,   # for checking null fields
+    HasIdCondition,    # for filtering by IDs
+    ValuesCount,       # for filtering by array length
+    NestedCondition,   # for nested object filtering
+    Nested,            # for nested object filtering
 )
 
 
@@ -193,6 +201,8 @@ class Query:
             if isinstance(filt, FilterGroup):
                 for child in filt.filters:
                     cond = self._make_qdrant_condition(child)
+                    if cond is None:  # Skip None conditions
+                        continue
                     if isinstance(cond, list):  # Handle contains_all conditions
                         must.extend(cond)
                     else:
@@ -200,6 +210,8 @@ class Query:
                 continue
 
             cond = self._make_qdrant_condition(filt)
+            if cond is None:  # Skip None conditions
+                continue
             if isinstance(cond, list):  # Handle contains_all conditions
                 must.extend(cond)
             elif filt.operator in ("!=", "not_in"):
@@ -217,6 +229,10 @@ class Query:
     def _make_qdrant_condition(self, filt: Filter):
         key, op, val = filt.field_name, filt.operator, filt.value
 
+        # Handle None values - skip the condition if value is None
+        if val is None:
+            return None
+
         if op == "==":
             return FieldCondition(key=key, match=MatchValue(value=val))
 
@@ -225,16 +241,17 @@ class Query:
             return FieldCondition(key=key, match=MatchValue(value=val))
 
         if op == "in":
-            # Convert values to strings for MatchAny
-            if isinstance(val, (list, tuple)):
-                val = [str(v) for v in val]
-            return FieldCondition(key=key, match=MatchAny(any=val))
+            # Preserve original data types - ensure val is a list
+            if not isinstance(val, (list, tuple)):
+                val = [val]
+            return FieldCondition(key=key, match=MatchAny(any=list(val)))
 
         if op == "not_in":
-            # Convert values to strings for MatchAny
-            if isinstance(val, (list, tuple)):
-                val = [str(v) for v in val]
-            return FieldCondition(key=key, match=MatchAny(any=val))
+            # Preserve original data types - ensure val is a list
+            if not isinstance(val, (list, tuple)):
+                val = [val]
+            # Use **kwargs to pass 'except' parameter since it's a Python keyword
+            return FieldCondition(key=key, match=MatchExcept(**{"except": list(val)}))
 
         if op == "contains":
             return FieldCondition(key=key, match=MatchValue(value=val))
@@ -261,6 +278,24 @@ class Query:
             if op == "<=":  kwargs["lte"] = val
             return FieldCondition(key=key, range=Range(**kwargs))
 
+        if op == "is_empty":
+            from qdrant_client.http.models import PayloadField
+            return IsEmptyCondition(is_empty=PayloadField(key=key))
+
+        if op == "is_null":
+            from qdrant_client.http.models import PayloadField
+            return IsNullCondition(is_null=PayloadField(key=key))
+
+        if op == "text_match":
+            return FieldCondition(key=key, match=MatchText(text=val))
+
+        if op == "values_count":
+            # val should be a dict with gt, gte, lt, lte keys
+            if isinstance(val, dict):
+                return FieldCondition(key=key, values_count=ValuesCount(**val))
+            else:
+                raise ValueError(f"values_count operator requires a dict with gt/gte/lt/lte keys, got {type(val)}")
+
         raise ValueError(f"Unsupported operator: {op}")
 
     def _convert_filter_to_qdrant(self, filt: Filter) -> Dict[str,Any]:
@@ -279,7 +314,7 @@ class Query:
         if op == "in":
             return {"key": field, "match": {"any": value}}
         if op == "not_in":
-            return {"key": field, "match": {"any": value}}
+            return {"key": field, "match": {"except": value}}
         if op == "contains":
             return {"key": field, "match": {"value": value}}
         if op == "contains_any":
@@ -288,6 +323,14 @@ class Query:
             return {"key": field, "match": {"all": value}}
         if op == "!=":
             return {"key": field, "match": {"value": value}}
+        if op == "is_empty":
+            return {"is_empty": {"key": field}}
+        if op == "is_null":
+            return {"is_null": {"key": field}}
+        if op == "text_match":
+            return {"key": field, "match": {"text": value}}
+        if op == "values_count":
+            return {"key": field, "values_count": value}
 
         raise ValueError(f"Unsupported operator: {op}")
 
