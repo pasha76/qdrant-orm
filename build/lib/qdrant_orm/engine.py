@@ -38,49 +38,83 @@ class QdrantEngine:
     
     def create_collection(self, collection_name: str, model_class: Type[Base]):
         """
-        Create (or recreate) a Qdrant collection wiring up ALL vector fields
-        by their attribute names—dense and sparse—so that your upserts
-        with named vectors will always succeed.
+        SAFELY create a Qdrant collection ONLY if it doesn't exist.
+        This version DOES NOT use recreate_collection to prevent deletion of existing collections.
         """
-        # 1) Gather your fields
-        dense_fields = {
-            name: fld
-            for name, fld in model_class._fields.items()
-            if isinstance(fld, VectorField)
-        }
-        sparse_fields = {
-            name: fld
-            for name, fld in model_class._fields.items()
-            if isinstance(fld, SparseVectorField)
-        }
+        # SAFETY: Protected collections that must NOT be recreated
+        PROTECTED_COLLECTIONS = {"items_v2", "search_v3", "items_v3", "looks_v3"}
+        
+        if collection_name in PROTECTED_COLLECTIONS:
+            print(f"🚨 BLOCKED: Cannot create/recreate protected collection '{collection_name}'")
+            print(f"🔒 Protected collections: {PROTECTED_COLLECTIONS}")
+            return
+        
+        try:
+            # Check if collection already exists
+            collections = self.client.get_collections()
+            existing_collections = {c.name for c in collections.collections}
+            
+            if collection_name in existing_collections:
+                print(f"✅ Collection '{collection_name}' already exists, skipping creation")
+                return
+                
+            print(f"🔧 Creating new collection '{collection_name}' safely...")
+            
+            # 1) Gather your fields
+            dense_fields = {
+                name: fld
+                for name, fld in model_class._fields.items()
+                if isinstance(fld, VectorField)
+            }
+            sparse_fields = {
+                name: fld
+                for name, fld in model_class._fields.items()
+                if isinstance(fld, SparseVectorField)
+            }
 
-        # 2) Build a **named** vectors_config for every dense field
-        #    (never use the single-vector shorthand)
-        vectors_config = {
-            name: qmodels.VectorParams(size=fld.dimensions, distance=fld.distance)
-            for name, fld in dense_fields.items()
-        }
+            # 2) Build a **named** vectors_config for every dense field
+            #    (never use the single-vector shorthand)
+            vectors_config = {
+                name: qmodels.VectorParams(size=fld.dimensions, distance=fld.distance)
+                for name, fld in dense_fields.items()
+            }
 
-        # 3) Build named sparse_vectors_config for every sparse field
-        sparse_vectors_config = {
-            name: qmodels.SparseVectorParams()
-            for name in sparse_fields
-        }
+            # 3) Build named sparse_vectors_config for every sparse field
+            sparse_vectors_config = {
+                name: qmodels.SparseVectorParams()
+                for name in sparse_fields
+            }
 
-        # 4) Recreate the collection with both named configs
-        self.client.recreate_collection(
-            collection_name=collection_name,
-            vectors_config=vectors_config,
-            sparse_vectors_config=sparse_vectors_config
-        )
+            # 4) SAFELY create collection WITHOUT recreating (this was the dangerous line!)
+            self.client.create_collection(
+                collection_name=collection_name,
+                vectors_config=vectors_config,
+                sparse_vectors_config=sparse_vectors_config
+            )
+            print(f"✅ Successfully created collection '{collection_name}'")
+            
+        except Exception as e:
+            error_msg = str(e)
+            if "already exists" in error_msg.lower():
+                print(f"✅ Collection '{collection_name}' already exists")
+            else:
+                print(f"❌ Failed to create collection '{collection_name}': {error_msg}")
+                raise
         
     def drop_collection(self, collection_name: str):
         """
-        Drop a collection
+        Drop a collection WITH PROTECTION
         
         Args:
             collection_name: Name of the collection to drop
         """
+        # SAFETY: Protected collections that must NOT be deleted
+        PROTECTED_COLLECTIONS = {"items_v2", "search_v3", "items_v3", "looks_v3"}
+        
+        if collection_name in PROTECTED_COLLECTIONS:
+            raise Exception(f"🚨 BLOCKED: Cannot drop protected collection '{collection_name}'. Protected collections: {PROTECTED_COLLECTIONS}")
+        
+        print(f"⚠️  WARNING: Dropping collection '{collection_name}'")
         self.client.delete_collection(collection_name=collection_name)
     
     def get_client(self) -> QdrantClient:
