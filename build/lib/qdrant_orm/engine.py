@@ -4,12 +4,12 @@ Engine and session classes for Qdrant ORM
 from typing import Dict, Any, Type, List, Optional, Union, Tuple
 import uuid
 import re
+import traceback
 
 from qdrant_client import QdrantClient
 from qdrant_client.http import models as qmodels
 from qdrant_client.http.models import SparseVector
 from .base import Base,VectorField,SparseVectorField
-
 
 class QdrantEngine:
     """Manages connection to Qdrant server"""
@@ -42,12 +42,11 @@ class QdrantEngine:
         This version DOES NOT use recreate_collection to prevent deletion of existing collections.
         """
         # SAFETY: Protected collections that must NOT be recreated
-        PROTECTED_COLLECTIONS = {"items_v2", "search_v3", "items_v3", "looks_v3"}
+        PROTECTED_COLLECTIONS = {"items_v2", "search_v2", "items_v3", "looks_v3"}
         
         if collection_name in PROTECTED_COLLECTIONS:
-            print(f"🚨 BLOCKED: Cannot create/recreate protected collection '{collection_name}'")
-            print(f"🔒 Protected collections: {PROTECTED_COLLECTIONS}")
-            return
+            # FIX: Raise an exception instead of silently returning. This makes failures explicit.
+            raise Exception(f"🚨 BLOCKED: Attempted to create a protected collection '{collection_name}'")
         
         try:
             # Check if collection already exists
@@ -108,6 +107,8 @@ class QdrantEngine:
         Args:
             collection_name: Name of the collection to drop
         """
+        print(f"🚨🚨🚨 DEBUG: ORM Engine.drop_collection called for collection '{collection_name}'!")
+        traceback.print_stack()
         # SAFETY: Protected collections that must NOT be deleted
         PROTECTED_COLLECTIONS = {"items_v2", "search_v3", "items_v3", "looks_v3"}
         
@@ -350,3 +351,11 @@ class QdrantSession:
         
         point = result[0]
         return self._point_to_model(point, model_class)
+
+
+if __name__ == "__main__":
+    engine = QdrantEngine(url="https://57bae1dd-4983-40da-8fc4-337da62dd839.us-east4-0.gcp.cloud.qdrant.io", 
+                            port=6333,
+                            api_key="iiVKB5Zr8_d1GbUoLTl5-z5yHQAl4gMIpqjWbbbFWMtxfQIiZ2uLag")
+    session = QdrantSession(engine)
+    session.create_collection(collection_name="search_v3", model_class=Look)
