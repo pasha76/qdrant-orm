@@ -221,21 +221,19 @@ class QdrantSession:
                     self._id_mapping[(collection, original_id)] = qdrant_id
                     payload[instance.__class__._pk_field] = original_id
 
-                    # Build PointStruct with named vectors (dense or sparse)
-                    if len(vectors) == 1 and isinstance(next(iter(instance.__class__._fields.values())), VectorField):
-                        # single dense vector can be flattened
-                        vector_value = next(iter(vectors.values()))
-                    else:
-                        # multiple or sparse vectors remain named
-                        vector_value = vectors
-
+                    # FIX: Always use a dictionary for vectors, even for a single vector.
+                    # The previous logic was causing issues with single-vector upserts.
                     points.append(qmodels.PointStruct(
                         id=qdrant_id,
-                        vector=vector_value,
+                        vector=vectors,  # Always pass the dictionary
                         payload=payload
                     ))
 
-                self.client.upsert(collection_name=collection, points=points)
+                self.client.upsert(
+                    collection_name=collection, 
+                    points=points,
+                    wait=True  # Ensure the operation completes before proceeding
+                )
 
             # Process deletions
             if operations['delete']:
