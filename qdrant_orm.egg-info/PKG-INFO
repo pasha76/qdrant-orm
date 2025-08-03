@@ -1,6 +1,6 @@
-Metadata-Version: 2.4
+Metadata-Version: 2.1
 Name: qdrant-orm
-Version: 0.3.1
+Version: 0.3.2
 Summary: A lightweight SQLAlchemy-style ORM for Qdrant vector database
 Author: Tolga Gunduz
 Classifier: Development Status :: 3 - Alpha
@@ -15,9 +15,3 @@ Requires-Python: >=3.7
 License-File: LICENSE
 Requires-Dist: qdrant-client>=1.15.0
 Requires-Dist: numpy>=1.21.0
-Dynamic: author
-Dynamic: classifier
-Dynamic: license-file
-Dynamic: requires-dist
-Dynamic: requires-python
-Dynamic: summary

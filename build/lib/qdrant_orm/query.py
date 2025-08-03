@@ -2,7 +2,7 @@ from typing import Any, Dict, List, Optional, Tuple, Type, Union
 from qdrant_orm import filters
 
 from qdrant_client.http.models import Filter as QdrantFilter, MatchExcept, NamedVector, NamedSparseVector, SparseVector
-
+from qdrant_client.http.models import SearchParams
 from .base import Base, Field, VectorField
 from .filters import Filter, FilterGroup
 from qdrant_client.http.models import (
@@ -143,6 +143,7 @@ class Query:
                 "with_payload": self._with_payload,
                 "with_vectors": self._with_vectors,
                 "query_vector": search_request,
+                "search_params":SearchParams(hnsw_ef=256)
             }
 
             if self._score_threshold is not None:
