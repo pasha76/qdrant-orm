@@ -1,8 +1,7 @@
-from typing import Any, Dict, List, Optional, Tuple, Type, Union
-from qdrant_orm import filters
-
+from typing import Any, Dict, Generator, List, Optional, Tuple, Type, Union
 from qdrant_client.http.models import Filter as QdrantFilter, MatchExcept, NamedVector, NamedSparseVector, SparseVector
 from qdrant_client.http.models import SearchParams
+import qdrant_orm
 from .base import Base, Field, VectorField
 from .filters import Filter, FilterGroup
 from qdrant_client.http.models import (
@@ -20,6 +19,7 @@ from qdrant_client.http.models import (
     NestedCondition,   # for nested object filtering
     Nested,            # for nested object filtering
 )
+from sqlalchemy import and_
 
 
 class Query:
@@ -42,6 +42,11 @@ class Query:
         self._with_payload: bool = True
         self._with_vectors: bool = False
         self._score_threshold: Optional[float] = None
+        self._group_by: Optional[str] = None
+        self._group_limit: int = 10
+        self._group_size: int = 1
+        self._prefetch_vector_field: Optional[str] = None
+        self._prefetch_vector_value: Optional[List[float]] = None
 
     def filter(self, *args: Filter) -> "Query":
         """Add filters to the query."""
@@ -79,6 +84,12 @@ class Query:
     def offset(self, offset: int) -> "Query":
         self._offset = offset
         return self
+    
+    def group_by(self, group_by: str=None,group_limit:int=10,group_size:int=1) -> "Query":
+        self._group_by = group_by
+        self._group_limit = group_limit
+        self._group_size = group_size
+        return self
 
     def with_payload(self, with_payload: bool = True) -> "Query":
         self._with_payload = with_payload
@@ -86,6 +97,17 @@ class Query:
 
     def with_vectors(self, with_vectors: bool = True) -> "Query":
         self._with_vectors = with_vectors
+        return self
+    
+    def prefetch(self, field: Union[str, VectorField],
+            query_vector: List[float] = None) -> "Query":
+        if isinstance(field, VectorField):
+            self._prefetch_vector_field = field.name
+        else:
+            self._prefetch_vector_field = field
+
+        if query_vector is not None:
+            self._prefetch_vector_value = query_vector
         return self
 
     def score_threshold(self, threshold: float) -> "Query":
@@ -113,43 +135,42 @@ class Query:
     def all(self) -> List[Base]:
         client = self._session._get_client()
         collection_name = self._model_class.__collection__
+        qfilter = self._build_qdrant_filter()
 
         # 1) Combined search takes precedence
         if hasattr(self, "_combined_search_params"):
             return self._get_combined_search_results()
 
-        # 2) Single-field vector search
+        # 2) Single-field vector search (dense or sparse)
         if self._vector_field and self._vector_value:
-            if not isinstance(self._vector_value,dict):
-                search_request = NamedVector(
-                    name=self._vector_field,
-                    vector=self._vector_value
+            vec_name = getattr(self._vector_field, "name", self._vector_field)
+
+            if isinstance(self._vector_value, dict):
+                # Sparse vector path
+                search_request = NamedSparseVector(
+                    name=vec_name,
+                    vector=SparseVector(
+                        indices=self._vector_value["indices"],
+                        values=self._vector_value["values"]
+                    )
                 )
             else:
-                print(self._vector_value)
-                vec_dict = self._vector_value
-                sparse_vec = SparseVector(
-                    indices=vec_dict['indices'],
-                    values=vec_dict['values']
-                )
-                search_request = NamedSparseVector(
-                    name=self._vector_field.name,
-                    vector=sparse_vec
-                )
-            search_params: Dict[str, Any] = {
+                # Dense vector path
+                search_request = NamedVector(name=vec_name, vector=self._vector_value)
+
+            search_params = {
                 "collection_name": collection_name,
                 "limit": self._limit,
                 "offset": self._offset,
                 "with_payload": self._with_payload,
                 "with_vectors": self._with_vectors,
                 "query_vector": search_request,
-                "search_params":SearchParams(hnsw_ef=256)
+                "search_params": SearchParams(hnsw_ef=512),
             }
-
             if self._score_threshold is not None:
                 search_params["score_threshold"] = self._score_threshold
-            if self._build_qdrant_filter():
-                search_params["query_filter"] = self._build_qdrant_filter() 
+            if qfilter:
+                search_params["query_filter"] = qfilter
 
             try:
                 results = client.search(**search_params)
@@ -158,26 +179,85 @@ class Query:
                 print(f"Error during vector search: {e}")
                 return []
 
-        # 3) Scroll for non-vector queries
-        scroll_params: Dict[str, Any] = {
+        # 3) Non-vector queries
+        scroll_params = {
             "collection_name": collection_name,
             "limit": self._limit,
             "offset": self._offset,
             "with_payload": self._with_payload,
             "with_vectors": self._with_vectors,
         }
-        if self._build_qdrant_filter():
-            scroll_params["scroll_filter"] = self._build_qdrant_filter()
+        if qfilter:
+            scroll_params["scroll_filter"] = qfilter
+
         try:
+            # 3a) Grouping
+            if self._group_by:
+                group_params = scroll_params.copy()
+                group_params.pop("offset", None)  # Not supported for groups
+                group_params["group_by"] = self._group_by
+                group_params["limit"] = self._group_limit
+                group_params["group_size"] = self._group_size
+
+                groups, _ = client.query_points_groups(**group_params)
+                models = []
+                for g in groups:
+                    for hit in g.hits:
+                        models.append(self._session._point_to_model(hit, self._model_class))
+                return models
+
+            # 3b) Prefetch vector search
+            if self._prefetch_vector_field and self._prefetch_vector_value:
+                vec_name = getattr(self._prefetch_vector_field, "name", self._prefetch_vector_field)
+                search_request = NamedVector(name=vec_name, vector=self._prefetch_vector_value)
+
+                search_params = {
+                    "collection_name": collection_name,
+                    "limit": self._limit,
+                    "offset": self._offset,
+                    "with_payload": self._with_payload,
+                    "with_vectors": self._with_vectors,
+                    "query_vector": search_request,
+                    "search_params": SearchParams(hnsw_ef=512),
+                }
+                if qfilter:
+                    search_params["query_filter"] = qfilter
+
+                results = client.search(**search_params)
+                return [self._session._point_to_model(pt, self._model_class) for pt in results]
+
+            # 3c) No vector at all → fallback to scroll
             points, _ = client.scroll(**scroll_params)
             return [self._session._point_to_model(pt, self._model_class) for pt in points]
+
         except Exception as e:
-            print(f"Error during scroll: {e}")
+            print(f"Error during scroll/search: {e}")
             return []
 
     def first(self) -> Optional[Base]:
         results = self.limit(1).all()
         return results[0] if results else None
+    
+    def ids(self) -> Generator:
+        client = self._session._get_client()
+        collection_name = self._model_class.__collection__
+        scroll_params: Dict[str, Any] = {
+            "collection_name": collection_name,
+            "limit": self._limit,
+            "offset": self._offset,
+            "with_payload": False,
+            "with_vectors": False,
+        }
+        if self._build_qdrant_filter():
+            scroll_params["scroll_filter"] = self._build_qdrant_filter()
+        try:
+            scroll_result, _ = client.scroll(**scroll_params)
+            ids = [point.id for point in scroll_result]
+            yield ids
+        except Exception as e:
+            print(f"Error during scroll: {e}")
+            yield []
+
 
     def count(self) -> int:
         client = self._session._get_client()

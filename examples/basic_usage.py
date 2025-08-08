@@ -134,6 +134,42 @@ def main():
     print(f"Found {len(results)} documents matching filters")
     for doc in results:
         print(f"  - {doc.title} (Rating: {doc.rating})")
+
+    # Basic querying
+    print("\n6. Gropu by querying")
+
+    # Get by ID
+    doc = session.get(Document, "doc1")
+    print(f"Retrieved by ID: {doc}")
+    print(f"  - Tags: {doc.tags}")
+    print(f"  - Keywords: {doc.keywords}")
+    
+    # Query with filters
+    print("\n6. Querying with filters")
+    results = session.query(Document).group_by(group_by="category",group_limit=1,group_size=3).all()
+
+    print(f"Found {len(results)} documents matching filters")
+    for doc in results:
+        print(f"  - {doc.title} (Rating: {doc.rating})")
+
+
+    # Basic querying
+    print("\n6.5. Prefetch by querying")
+
+    # Get by ID
+    doc = session.get(Document, "doc1")
+    print(f"Retrieved by ID: {doc}")
+    print(f"  - Tags: {doc.tags}")
+    print(f"  - Keywords: {doc.keywords}")
+    
+    # Query with filters
+    print("\n6.5. Querying with filters")
+    results = session.query(Document).prefetch(Document.embedding,query_vector=doc_embedding).vector_search(Document.embedding,doc_embedding).all()
+
+    print(f"Found {len(results)} documents matching filters")
+    for doc in results:
+        print(f"  - {doc.title} (Rating: {doc.rating})")
+
     
     # Query with array field filters
     print("\n7. Querying with array field filters")
