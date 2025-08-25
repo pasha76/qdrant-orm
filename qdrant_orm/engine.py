@@ -305,10 +305,6 @@ class QdrantSession:
                 if vector_field_name:
                     data[vector_field_name] = point.vector
         
-        # Include score if available (from search results)
-        if hasattr(point, 'score') and point.score is not None:
-            data['score'] = point.score
-        
         # Use the original ID from payload if available, otherwise use Qdrant ID
         pk_field = model_class._pk_field
         if pk_field and pk_field in data:
@@ -318,7 +314,20 @@ class QdrantSession:
             # Use Qdrant ID as fallback
             data[pk_field] = point.id
         
-        return model_class.from_dict(data)
+        # Filter data to only include fields that exist in the model
+        filtered_data = {}
+        for key, value in data.items():
+            if key in model_class._fields:
+                filtered_data[key] = value
+        
+        # Create the model instance
+        instance = model_class.from_dict(filtered_data)
+        
+        # Add score as a dynamic attribute if available (from search results)
+        if hasattr(point, 'score') and point.score is not None:
+            setattr(instance, 'score', point.score)
+        
+        return instance
     
     def get(self, model_class: Type[Base], id_value):
         """

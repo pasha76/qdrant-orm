@@ -4,6 +4,7 @@ from qdrant_client.http.models import SearchParams
 import qdrant_orm
 from .base import Base, Field, VectorField
 from .filters import Filter, FilterGroup
+from .engine import _convert_id_for_qdrant
 from qdrant_client.http.models import (
     Filter       as QdrantFilter,
     FieldCondition,
@@ -114,6 +115,39 @@ class Query:
         self._score_threshold = threshold
         return self
 
+    def recommend(
+        self,
+        positive_ids: List[Union[str, int]] = None,
+        negative_ids: List[Union[str, int]] = None,
+        positive_vectors: List[List[float]] = None,
+        negative_vectors: List[List[float]] = None,
+        using: Optional[str] = None,
+        strategy: str = "average_vector"
+    ) -> "Query":
+        """
+        Perform recommendation search using positive and negative examples.
+        
+        Args:
+            positive_ids: List of positive example IDs
+            negative_ids: List of negative example IDs  
+            positive_vectors: List of positive example vectors
+            negative_vectors: List of negative example vectors
+            using: Vector field name to use for recommendation
+            strategy: Recommendation strategy ("average_vector")
+            
+        Returns:
+            Query object for chaining
+        """
+        self._recommend_params = {
+            "positive_ids": positive_ids or [],
+            "negative_ids": negative_ids or [],
+            "positive_vectors": positive_vectors or [],
+            "negative_vectors": negative_vectors or [],
+            "using": using,
+            "strategy": strategy
+        }
+        return self
+
     def get(self, id_value: Any) -> Optional[Base]:
         client = self._session._get_client()
         collection_name = self._model_class.__collection__
@@ -137,11 +171,15 @@ class Query:
         collection_name = self._model_class.__collection__
         qfilter = self._build_qdrant_filter()
 
-        # 1) Combined search takes precedence
+        # 1) Recommendation search takes precedence
+        if hasattr(self, "_recommend_params"):
+            return self._execute_recommend_search()
+
+        # 2) Combined search takes precedence
         if hasattr(self, "_combined_search_params"):
             return self._get_combined_search_results()
 
-        # 2) Single-field vector search (dense or sparse)
+        # 3) Single-field vector search (dense or sparse)
         if self._vector_field and self._vector_value:
             vec_name = getattr(self._vector_field, "name", self._vector_field)
 
@@ -179,7 +217,7 @@ class Query:
                 print(f"Error during vector search: {e}")
                 return []
 
-        # 3) Non-vector queries
+        # 4) Non-vector queries
         scroll_params = {
             "collection_name": collection_name,
             "limit": self._limit,
@@ -191,7 +229,7 @@ class Query:
             scroll_params["scroll_filter"] = qfilter
 
         try:
-            # 3a) Grouping
+            # 4a) Grouping
             if self._group_by:
                 group_params = scroll_params.copy()
                 group_params.pop("offset", None)  # Not supported for groups
@@ -206,7 +244,7 @@ class Query:
                         models.append(self._session._point_to_model(hit, self._model_class))
                 return models
 
-            # 3b) Prefetch vector search
+            # 4b) Prefetch vector search
             if self._prefetch_vector_field and self._prefetch_vector_value:
                 vec_name = getattr(self._prefetch_vector_field, "name", self._prefetch_vector_field)
                 search_request = NamedVector(name=vec_name, vector=self._prefetch_vector_value)
@@ -226,7 +264,7 @@ class Query:
                 results = client.search(**search_params)
                 return [self._session._point_to_model(pt, self._model_class) for pt in results]
 
-            # 3c) No vector at all → fallback to scroll
+            # 4c) No vector at all → fallback to scroll
             points, _ = client.scroll(**scroll_params)
             return [self._session._point_to_model(pt, self._model_class) for pt in points]
 
@@ -271,6 +309,70 @@ class Query:
         except Exception as e:
             print(f"Error counting records: {e}")
             return 0
+
+    def _execute_recommend_search(self) -> List[Base]:
+        """Execute recommendation search and return results."""
+        if not hasattr(self, "_recommend_params"):
+            return []
+            
+        params = self._recommend_params
+        client = self._session._get_client()
+        collection_name = self._model_class.__collection__
+        
+        # Import the conversion function
+        from .engine import _convert_id_for_qdrant
+        
+        # Convert IDs to Qdrant format
+        positive_ids = [
+            _convert_id_for_qdrant(id_val) 
+            for id_val in params["positive_ids"]
+        ]
+        negative_ids = [
+            _convert_id_for_qdrant(id_val) 
+            for id_val in params["negative_ids"]
+        ]
+        
+        # Determine vector field to use
+        vector_field_name = params["using"]
+        if not vector_field_name:
+            # Auto-detect the first vector field
+            for name, field in self._model_class._fields.items():
+                if isinstance(field, VectorField):
+                    vector_field_name = name
+                    break
+        
+        if not vector_field_name:
+            print("Error: No vector field found for recommendation")
+            return []
+        
+        # Build recommendation request
+        recommend_params = {
+            "collection_name": collection_name,
+            "positive": positive_ids + params["positive_vectors"],
+            "negative": negative_ids + params["negative_vectors"],
+            "limit": self._limit,
+            "offset": self._offset,
+            "with_payload": self._with_payload,
+            "with_vectors": self._with_vectors,
+            "using": vector_field_name  # Always specify the vector field
+        }
+            
+        # Add score threshold if set
+        if self._score_threshold is not None:
+            recommend_params["score_threshold"] = self._score_threshold
+            
+        # Add filters if present
+        qfilter = self._build_qdrant_filter()
+        if qfilter:
+            recommend_params["query_filter"] = qfilter
+        
+        try:
+            results = client.recommend(**recommend_params)
+            return [self._session._point_to_model(pt, self._model_class) for pt in results]
+        except Exception as e:
+            print(f"Error during recommendation search: {e}")
+            return []
+
     def _build_qdrant_filter(self) -> Optional[QdrantFilter]:
         if not self._filters:
             return None
