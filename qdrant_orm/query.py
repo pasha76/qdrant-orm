@@ -198,44 +198,47 @@ class Query:
 
             search_params = {
                 "collection_name": collection_name,
-                "limit": self._limit,
-                "offset": self._offset,
+                "query_vector": search_request,
+                "limit": self._limit + self._offset,  # Get extra for manual offset
                 "with_payload": self._with_payload,
                 "with_vectors": self._with_vectors,
-                "query_vector": search_request,
-                "search_params": SearchParams(hnsw_ef=512),
             }
+            
             if self._score_threshold is not None:
                 search_params["score_threshold"] = self._score_threshold
+                
             if qfilter:
                 search_params["query_filter"] = qfilter
 
             try:
                 results = client.search(**search_params)
+                
+                # Manual offset handling for vector search
+                if self._offset > 0 and len(results) > self._offset:
+                    results = results[self._offset:]
+                
+                if len(results) > self._limit:
+                    results = results[:self._limit]
+                
                 return [self._session._point_to_model(pt, self._model_class) for pt in results]
             except Exception as e:
                 print(f"Error during vector search: {e}")
                 return []
 
-        # 4) Non-vector queries
-        scroll_params = {
-            "collection_name": collection_name,
-            "limit": self._limit,
-            "offset": self._offset,
-            "with_payload": self._with_payload,
-            "with_vectors": self._with_vectors,
-        }
-        if qfilter:
-            scroll_params["scroll_filter"] = qfilter
-
+        # 4) Non-vector queries - FIXED SCROLL WITH OFFSET
         try:
             # 4a) Grouping
             if self._group_by:
-                group_params = scroll_params.copy()
-                group_params.pop("offset", None)  # Not supported for groups
-                group_params["group_by"] = self._group_by
-                group_params["limit"] = self._group_limit
-                group_params["group_size"] = self._group_size
+                group_params = {
+                    "collection_name": collection_name,
+                    "group_by": self._group_by,
+                    "limit": self._group_limit,
+                    "group_size": self._group_size,
+                    "with_payload": self._with_payload,
+                    "with_vectors": self._with_vectors,
+                }
+                if qfilter:
+                    group_params["query_filter"] = qfilter
 
                 groups, _ = client.query_points_groups(**group_params)
                 models = []
@@ -251,22 +254,59 @@ class Query:
 
                 search_params = {
                     "collection_name": collection_name,
-                    "limit": self._limit,
-                    "offset": self._offset,
+                    "query_vector": search_request,
+                    "limit": self._limit + self._offset,  # Manual offset for vector search
                     "with_payload": self._with_payload,
                     "with_vectors": self._with_vectors,
-                    "query_vector": search_request,
-                    "search_params": SearchParams(hnsw_ef=512),
                 }
                 if qfilter:
                     search_params["query_filter"] = qfilter
+                if self._score_threshold is not None:
+                    search_params["score_threshold"] = self._score_threshold
 
                 results = client.search(**search_params)
+                
+                # Apply manual offset for prefetch vector search
+                if self._offset > 0 and len(results) > self._offset:
+                    results = results[self._offset:]
+                if len(results) > self._limit:
+                    results = results[:self._limit]
+                    
                 return [self._session._point_to_model(pt, self._model_class) for pt in results]
 
-            # 4c) No vector at all → fallback to scroll
-            points, _ = client.scroll(**scroll_params)
-            return [self._session._point_to_model(pt, self._model_class) for pt in points]
+            # 4c) Regular scroll - FIXED VERSION
+            if self._offset == 0:
+                # No offset needed - use direct scroll
+                scroll_params = {
+                    "collection_name": collection_name,
+                    "limit": self._limit,
+                    "with_payload": self._with_payload,
+                    "with_vectors": self._with_vectors,
+                }
+                if qfilter:
+                    scroll_params["scroll_filter"] = qfilter
+
+                points, _ = client.scroll(**scroll_params)
+                return [self._session._point_to_model(pt, self._model_class) for pt in points]
+            else:
+                # Offset needed - get more items and slice manually
+                scroll_params = {
+                    "collection_name": collection_name,
+                    "limit": self._limit + self._offset,
+                    "with_payload": self._with_payload,
+                    "with_vectors": self._with_vectors,
+                }
+                if qfilter:
+                    scroll_params["scroll_filter"] = qfilter
+
+                points, _ = client.scroll(**scroll_params)
+                
+                # Apply manual offset
+                start_idx = self._offset
+                end_idx = start_idx + self._limit
+                sliced_points = points[start_idx:end_idx] if len(points) > start_idx else []
+                
+                return [self._session._point_to_model(pt, self._model_class) for pt in sliced_points]
 
         except Exception as e:
             print(f"Error during scroll/search: {e}")
