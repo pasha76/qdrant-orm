@@ -10,7 +10,7 @@ setup(
     author="Tolga Gunduz",
     packages=find_packages(),
     install_requires=[
-        "qdrant-client>=1.15.0",
+        "qdrant-client==1.15.1",
         "numpy>=1.21.0",
     ],
     python_requires=">=3.7",
