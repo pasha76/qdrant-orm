@@ -211,7 +211,7 @@ class Query:
                 search_params["query_filter"] = qfilter
 
             try:
-                results = client.search(**search_params)
+                results = client.search_points(**search_params)
                 
                 # Manual offset handling for vector search
                 if self._offset > 0 and len(results) > self._offset:
@@ -264,7 +264,7 @@ class Query:
                 if self._score_threshold is not None:
                     search_params["score_threshold"] = self._score_threshold
 
-                results = client.search(**search_params)
+                results = client.search_points(**search_params)
                 
                 # Apply manual offset for prefetch vector search
                 if self._offset > 0 and len(results) > self._offset:
@@ -654,7 +654,7 @@ class Query:
             if self._build_qdrant_filter():
                 sp["query_filter"] = self._build_qdrant_filter()
             try:
-                res = client.search(**sp)
+                res = client.search_points(**sp)
                 for pt in res:
                     pid = pt.id
                     all_scores[pid] = all_scores.get(pid, 0.0) + pt.score * weight
