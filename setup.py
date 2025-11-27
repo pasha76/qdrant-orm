@@ -5,12 +5,12 @@ from setuptools import setup, find_packages
 
 setup(
     name="qdrant-orm",
-    version="0.4.6",
+    version="0.4.7",
     description="A lightweight SQLAlchemy-style ORM for Qdrant vector database",
     author="Tolga Gunduz",
     packages=find_packages(),
     install_requires=[
-        "qdrant-client==1.15.1",
+        "qdrant-client==1.15.0",
         "numpy>=1.21.0",
     ],
     python_requires=">=3.7",
